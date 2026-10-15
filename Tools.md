@@ -1,529 +1,757 @@
 ```markdown
-# tools.fetch 使用说明
+# Mobox 规则引擎 JS 接口文档
 
-`tools.fetch` 是 Mobox 规则引擎（`RuleExecutor`）暴露给 JS 的网络请求接口，语义对齐 Web `fetch`。
+Mobox 规则引擎通过 `tools` 对象向 JS 规则暴露一组宿主能力。
 
-- 位置：`tools.fetch`
-- 返回：`Promise<Response>`
-- 用法：`await tools.fetch(...)`
-
-> **重要**：`tools.fetch` 只接受**一个**参数。
-> 要带 options，必须全部塞进同一个对象里：
->
-> ```javascript
-> await tools.fetch({ url, method, headers, ... })
-> ```
->
-> **不要**写成 `tools.fetch(url, options)`，第二个参数会被丢弃。
-
-> 兼容说明：
-> 旧字段 `followRedirects` / `cache`（Bool）仍然被识别，
-> 老规则无需修改即可运行。
+- 位置：全局对象 `tools`
+- 用途：解析 HTML/XML、处理 JSON、发起网络请求、弹窗、验证码、内置浏览器
+- 返回：同步方法直接返回；异步方法返回 `Promise`
 
 ---
 
 ## 目录
 
 - [一、快速开始](#一快速开始)
-- [二、函数签名](#二函数签名)
-- [三、参数详解](#三参数详解)
-- [四、返回值 Response](#四返回值-response)
-- [五、错误处理](#五错误处理)
-- [六、常用示例](#六常用示例)
-- [七、与 Web fetch 的差异](#七与-web-fetch-的差异)
-- [八、注意事项](#八注意事项)
-- [九、最小迁移指南](#九最小迁移指南)
-- [十、FAQ](#十faq)
+- [二、接口总览](#二接口总览)
+- [三、tools.css](#三toolscss)
+- [四、tools.xp](#四toolsxp)
+- [五、tools.jp](#五toolsjp)
+- [六、tools.toast](#六toolstoast)
+- [七、tools.getVerificationCode](#七toolsgetverificationcode)
+- [八、tools.startBrowser](#八toolsstartbrowser)
+- [九、console](#九console)
+- [十、工具方法](#十工具方法)
+- [十一、错误处理](#十一错误处理)
+- [十二、完整示例](#十二完整示例)
 
 ---
 
 ## 一、快速开始
 
 ```javascript
-// 最简：只传 URL 字符串
-const res = await tools.fetch("https://example.com");
+async function main() {
 
-console.log(res.status);
-console.log(res.text);
-```
+    // 1. 请求页面
+    const res = await tools.fetch({
+        url: "https://example.com",
+        headers: {
+            "User-Agent": "Mozilla/5.0"
+        }
+    });
 
-```javascript
-// 带参数：全部塞进一个对象
-const res = await tools.fetch({
-    url: "https://example.com/api",
-    method: "POST",
-    headers: {
-        "Content-Type": "application/json"
-    },
-    body: { hello: "world" }
-});
+    // 2. 解析 HTML
+    const titles = tools.css(res.text, "h2.title@text");
+    console.log("titles:", titles);
 
-console.log(res.ok, res.status, res.json);
+    // 3. 弹提示
+    tools.toast("共 " + titles.length + " 条");
+
+    return titles;
+}
 ```
 
 ---
 
-## 二、函数签名
+## 二、接口总览
+
+| 方法 | 类型 | 说明 |
+|---|---|---|
+| `tools.css` | 同步 | CSS 选择器解析 HTML |
+| `tools.xp` | 同步 | XPath 解析 XML/HTML |
+| `tools.jp` | 同步 | JSONPath 查询 |
+| `tools.toast` | 同步 | 弹窗提示（支持自定义图标） |
+| `tools.getVerificationCode` | 异步 | 弹验证码输入框 |
+| `tools.startBrowser` | 异步 | 打开内置浏览器 |
+| `tools.fetch` | 异步 | 发起网络请求（见 `tools.fetch.md`） |
+| `console.log` | 同步 | 日志输出 |
+
+---
+
+## 三、tools.css
+
+用 CSS 选择器从 HTML 中提取内容。
+
+### 签名
 
 ```typescript
-tools.fetch(input: string | FetchOptions): Promise<Response>
+tools.css(html: string, selector: string, index?: number): string | string[]
 ```
 
 ### 参数
 
-只有一个参数 `input`，两种形态：
-
-| 形态 | 类型 | 说明 |
+| 参数 | 类型 | 说明 |
 |---|---|---|
-| URL 字符串 | `string` | 只需发一个 GET 时用 |
-| 配置对象 | `FetchOptions` | 需要 method / headers / body 时用 |
+| `html` | `string` | HTML 字符串 |
+| `selector` | `string` | CSS 选择器，支持 `@attr` 后缀 |
+| `index` | `number` | 可选。指定返回第几个元素，支持负索引 |
 
-### FetchOptions
+### `@attr` 后缀
 
-| 字段 | 类型 | 默认值 | 说明 |
+| 后缀 | 说明 |
+|---|---|
+| `@text` | 元素文本（`script` / `style` 返回原始内容） |
+| `@html` | 元素内部 HTML |
+| `@outerhtml` | 元素完整 HTML（含自身标签） |
+| `@owntext` | 元素自身的直接文本（不含子元素） |
+| `@data` | 元素原始数据 |
+| `@任意属性名` | 元素该属性的值 |
+
+**不写 `@`** → 返回 `outerHTML`。
+
+### 返回值
+
+| 场景 | 返回 |
+|---|---|
+| 指定 `index` | `string` |
+| 未指定 `index` | `string[]` |
+| 无匹配 | `""` 或 `[]` |
+
+### 示例
+
+```javascript
+const html = `
+    <div class="item" data-id="1"><h3><a href="/a">标题 A</a></h3></div>
+    <div class="item" data-id="2"><h3><a href="/b">标题 B</a></h3></div>
+`;
+
+// 多个文本
+tools.css(html, ".item h3 a@text");
+// ["标题 A", "标题 B"]
+
+// 第一个
+tools.css(html, ".item h3 a@text", 0);
+// "标题 A"
+
+// 最后一个（负索引）
+tools.css(html, ".item h3 a@text", -1);
+// "标题 B"
+
+// 属性
+tools.css(html, ".item@data-id");
+// ["1", "2"]
+
+// outerHTML
+tools.css(html, ".item", 0);
+// "<div class=\"item\" data-id=\"1\">...</div>"
+```
+
+---
+
+## 四、tools.xp
+
+用 XPath 解析 XML/HTML。
+
+### 签名
+
+```typescript
+tools.xp(xml: string, path: string): string[]
+```
+
+### 参数
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `xml` | `string` | XML/HTML 字符串 |
+| `path` | `string` | XPath 表达式 |
+
+### 返回值
+
+`string[]` —— 匹配到的节点内容。
+
+- 文本节点 → 文本内容
+- 元素节点 → 原始 XML
+
+### 示例
+
+```javascript
+const html = `
+    <div class="show">A</div>
+    <div class="show">B</div>
+    <div class="hide">C</div>
+`;
+
+// 匹配元素
+tools.xp(html, "//div[contains(@class,'show')]");
+// ["<div class=\"show\">A</div>", "<div class=\"show\">B</div>"]
+
+// 匹配文本
+tools.xp(html, "//div[@class='show']/text()");
+// ["A", "B"]
+```
+
+---
+
+## 五、tools.jp
+
+JSONPath 查询。
+
+### 签名
+
+```typescript
+tools.jp(value: any, path: string): any
+```
+
+### 参数
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `value` | `any` | JSON 字符串、对象、数组、primitive |
+| `path` | `string` | JSONPath 表达式 |
+
+### 支持的 Path
+
+| 语法 | 说明 |
+|---|---|
+| `title` | 属性 |
+| `$.title` | 同上，带根 |
+| `data.novelList` | 多级属性 |
+| `items[0]` | 数组索引 |
+| `items[*]` | 数组全部 |
+| `items[*].title` | 数组元素属性 |
+| `items.*.title` | 同上 |
+| `..title` | 递归查找 |
+| `$..title` | 同上 |
+
+### 返回值
+
+| 场景 | 返回 |
+|---|---|
+| 单个匹配 | 匹配值本身 |
+| 多个匹配 | `Array` |
+| 无匹配 | `null` |
+
+### 示例
+
+```javascript
+const data = {
+    code: 0,
+    data: {
+        novelList: [
+            { id: 1, title: "A" },
+            { id: 2, title: "B" }
+        ]
+    }
+};
+
+// 取数组
+tools.jp(data, "data.novelList");
+// [{id:1,title:"A"}, {id:2,title:"B"}]
+
+// 取数组所有 title
+tools.jp(data, "data.novelList[*].title");
+// ["A", "B"]
+
+// 递归查找
+tools.jp(data, "$..id");
+// [1, 2]
+
+// 字符串输入
+tools.jp(JSON.stringify(data), "data.novelList[0].title");
+// "A"
+```
+
+---
+
+## 六、tools.toast
+
+弹窗提示，支持自定义 SF Symbol 图标。
+
+### 签名
+
+```typescript
+tools.toast(message: string, systemName?: string): void
+```
+
+### 参数
+
+| 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `url` | `string` | — | 请求地址（必填，或使用 `input` 别名） |
-| `input` | `string` | — | `url` 的别名 |
-| `method` | `string` | `"GET"` | HTTP 方法，大小写不敏感 |
-| `headers` | `object` | `{}` | 请求头键值对，值必须是字符串 |
-| `body` | `string \| object \| array` | — | 请求体。`GET` / `HEAD` 会被忽略 |
-| `timeout` | `number` | `10000` | 请求超时（毫秒） |
-| `redirect` | `string` | `"follow"` | 重定向策略，见下文 |
-| `cache` | `string` | `"default"` | 缓存策略，见下文 |
-| `credentials` | `string` | `"same-origin"` | 凭证策略，见下文 |
-| `followRedirects` | `boolean` | — | 旧字段兼容 → `redirect` |
-| `cache` | `boolean` | — | 旧字段兼容 → `cache` 枚举 |
+| `message` | `string` | ✅ | 提示内容 |
+| `systemName` | `string` | ❌ | SF Symbol 图标名。不传时宿主使用默认图标 |
 
----
+### 说明
 
-## 三、参数详解
+- **同步方法**，不返回 Promise
+- 显示由宿主 App 决定（Toast / 弹窗）
+- 未注册 handler 时静默无效果
+- `systemName` 是 SF Symbol 名称，见 Apple 官方列表
 
-### 1. `method`
-
-支持的常见方法：
-
-```
-GET / POST / PUT / PATCH / DELETE / HEAD / OPTIONS
-```
-
-`GET` / `HEAD` 不会发送 `body`。
+### 示例
 
 ```javascript
-await tools.fetch({
-    url: "https://example.com/api",
-    method: "POST"
-});
+// 默认图标
+tools.toast("hello");
+tools.toast("加载中…");
+
+// 自定义图标
+tools.toast("加载中", "arrow.clockwise");
+tools.toast("成功", "checkmark.circle.fill");
+tools.toast("失败", "xmark.circle.fill");
+tools.toast("警告", "exclamationmark.triangle.fill");
+tools.toast("信息", "info.circle");
+tools.toast("密码错误.", "exclamationmark.circle.fill");
 ```
 
----
+### 常用 SF Symbol 图标
 
-### 2. `headers`
-
-普通对象，**键和值都必须是字符串**。
-
-```javascript
-await tools.fetch({
-    url: "https://example.com/api",
-    headers: {
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0",
-        "Cookie": "a=1; b=2",
-        "Referer": "https://example.com/"
-    }
-});
-```
-
-**注意**：
-
-- `tools.fetch` 不会自动带 cookie，需要时手动在 `headers.Cookie` 里写
-- 同名 header 只保留最后一次设置
-- 值如果是 `number` / `boolean`，**整个 `headers` 会被静默忽略**，务必用字符串
-
----
-
-### 3. `body`
-
-支持三种形态：
-
-```javascript
-// 字符串
-await tools.fetch({
-    url: "https://example.com/api",
-    method: "POST",
-    body: "raw text"
-});
-
-// 对象（自动 JSON 序列化，且自动补 Content-Type: application/json）
-await tools.fetch({
-    url: "https://example.com/api",
-    method: "POST",
-    body: { hello: "world" }
-});
-
-// 数组（包一层 __array__，自动 JSON 序列化）
-await tools.fetch({
-    url: "https://example.com/api",
-    method: "POST",
-    body: [1, 2, 3]
-});
-```
-
-`GET` / `HEAD` 下 `body` 被忽略。
-
----
-
-### 4. `timeout`
-
-单位毫秒。默认 `10000`。
-
-```javascript
-await tools.fetch({
-    url: "https://slow.example.com",
-    timeout: 30000
-});
-```
-
----
-
-### 5. `redirect`
-
-| 值 | 行为 |
+| 图标名 | 用途 |
 |---|---|
-| `"follow"`（默认） | 自动跟随 3xx |
-| `"manual"` | 不跟随，返回 3xx 原响应 |
-| `"error"` | 命中 3xx 直接抛错 |
+| `info.circle` | 信息 |
+| `checkmark.circle.fill` | 成功 |
+| `xmark.circle.fill` | 失败 |
+| `exclamationmark.triangle.fill` | 警告 |
+| `exclamationmark.circle.fill` | 错误 |
+| `bell.fill` | 通知（默认） |
+| `arrow.clockwise` | 加载 / 刷新 |
+| `clock.fill` | 等待 |
+| `lock.fill` | 加密 / 锁定 |
+| `trash.fill` | 删除 |
 
-```javascript
-// 不跟随
-const res = await tools.fetch({
-    url: "https://example.com/short",
-    redirect: "manual"
-});
-console.log(res.status, res.headers.location);
+### 注意
 
-// 3xx 视为错误
-try {
-    await tools.fetch({
-        url: "https://example.com/short",
-        redirect: "error"
-    });
-} catch (e) {
-    console.log(e); // fetch 重定向被拒绝：...
-}
-```
+- **不要 `await`**
+- **不要在循环里高频调用**
+- 传对象会被 `toString()`，建议先 `String(...)`
+- `systemName` 传空字符串会被忽略，走默认图标
 
 ---
 
-### 6. `cache`
+## 七、tools.getVerificationCode
 
-| 值 | 行为 |
-|---|---|
-| `"default"`（默认） | 读缓存 + 写缓存，TTL 300s |
-| `"no-store"` | 不读不写 |
-| `"no-cache"` | 跳过读取，但写入 |
-| `"reload"` | 跳过读取，但写入 |
-| `"force-cache"` | 读缓存 + 写缓存 |
-| `"only-if-cached"` | 只读缓存，不发起请求 |
+弹窗让用户输入验证码。
 
-```javascript
-await tools.fetch({
-    url: "https://example.com/dynamic",
-    cache: "no-store"
-});
-```
-
----
-
-### 7. `credentials`
-
-| 值 | 行为 |
-|---|---|
-| `"omit"` | 不带凭证 |
-| `"same-origin"`（默认） | 仅同源带凭证 |
-| `"include"` | 总是带凭证 |
-
-> 当前实现里，`credentials` 主要用于语义占位，
-> 想带 cookie 请显式写在 `headers.Cookie`。
-
----
-
-## 四、返回值 Response
+### 签名
 
 ```typescript
-interface Response {
-    ok: boolean;               // 200 <= status < 300
-    status: number;            // HTTP 状态码
-    statusText: string;        // "OK" / "Not Found" ...
-    url: string;               // 最终请求 URL（跟随重定向后）
-    redirected: boolean;       // 是否发生了重定向
-    headers: Record<string, string>;
-    text: string;              // body 文本
-    json: any | null;          // body 解析为 JSON，失败为 null
-    bytes: string;             // body 的 base64 编码
-    redirects?: RedirectRecord[];
-}
+tools.getVerificationCode(image: string, title: string): Promise<string | object>
 ```
 
-### RedirectRecord
+### 参数
 
-仅当 `redirected === true` 时存在。
-
-```typescript
-interface RedirectRecord {
-    from: string;
-    to: string;
-    statusCode: number;
-    headers: Record<string, string>;
-}
-```
-
----
-
-## 五、错误处理
-
-`tools.fetch` 在以下情况会 reject：
-
-| 场景 | 错误信息 |
-|---|---|
-| 参数非法 | `fetch 参数错误：...` |
-| URL 非法 | `fetch 无效 url：...` |
-| 网络错误 | `fetch 网络错误：...` |
-| 重定向被拒（`redirect: "error"`） | `fetch 重定向被拒绝：...` |
-| 主动取消 | `fetch 已取消` |
-
-```javascript
-try {
-    const res = await tools.fetch({
-        url: "https://example.com/short",
-        redirect: "error"
-    });
-} catch (e) {
-    console.log("请求失败:", e);
-}
-```
-
-> HTTP 非 2xx **不会** reject。`404` / `500` 是正常 resolve 的，
-> 通过 `res.ok === false` 或 `res.status` 判断。
-
----
-
-## 六、常用示例
-
-### 1. GET 并解析 JSON
-
-```javascript
-const res = await tools.fetch("https://api.example.com/list");
-
-if (res.ok) {
-    const data = res.json;
-    console.log(data);
-}
-```
-
-### 2. POST JSON
-
-```javascript
-const res = await tools.fetch({
-    url: "https://api.example.com/login",
-    method: "POST",
-    headers: {
-        "Content-Type": "application/json"
-    },
-    body: {
-        username: "admin",
-        password: "123456"
-    }
-});
-
-console.log(res.status, res.json);
-```
-
-### 3. 带 Cookie / Referer
-
-```javascript
-const res = await tools.fetch({
-    url: "https://example.com/data",
-    headers: {
-        "Cookie": "sessionid=abc123",
-        "Referer": "https://example.com/"
-    }
-});
-```
-
-### 4. 只看响应头（HEAD）
-
-```javascript
-const res = await tools.fetch({
-    url: "https://example.com/file.mp4",
-    method: "HEAD"
-});
-
-console.log(res.headers["content-length"]);
-```
-
-### 5. 不跟随重定向
-
-```javascript
-const res = await tools.fetch({
-    url: "https://example.com/short",
-    redirect: "manual"
-});
-
-console.log(res.status, res.headers.location);
-```
-
-### 6. 禁用缓存
-
-```javascript
-const res = await tools.fetch({
-    url: "https://example.com/dynamic",
-    cache: "no-store"
-});
-```
-
-### 7. 长超时
-
-```javascript
-const res = await tools.fetch({
-    url: "https://slow.example.com",
-    timeout: 60000
-});
-```
-
-### 8. 兼容旧写法
-
-旧版 `httpRequest` 的调用方式仍被识别：
-
-```javascript
-const res = await tools.fetch({
-    url: "https://example.com",
-    method: "GET",
-    followRedirects: false,   // => redirect: "manual"
-    cache: false              // => cache: "no-store"
-});
-```
-
----
-
-## 七、与 Web fetch 的差异
-
-| Web fetch | tools.fetch | 说明 |
+| 参数 | 类型 | 说明 |
 |---|---|---|
-| `fetch(url, options)` 双参数 | `fetch({ url, ...options })` 单参数 | **最大差异** |
-| `Response.text()` | `res.text` | 属性不是方法，body 一次性消费 |
-| `Response.json()` | `res.json` | 同上 |
-| `Response.clone()` | 无 | body 已存 String |
-| `Response.body` | 无 | 用 `res.text` / `res.bytes` |
-| `Headers` 类 | 普通对象 | 简单够用 |
-| `AbortController` | 无 | 用 `timeout` |
-| `signal` | 无 | 同上 |
-| `mode` | 无 | 无 CORS 概念 |
-| `integrity` | 无 | — |
-| `keepalive` | 无 | — |
-| `credentials: "include"` 自动带 cookie | 需手动写 `headers.Cookie` | — |
-| `Request` 实例 | 无 | 只支持 string / plain object |
+| `image` | `string` | 图片地址（http(s)）或 base64 数据 |
+| `title` | `string` | 弹窗标题 |
+
+### 返回值
+
+| 输入类型 | 返回 |
+|---|---|
+| base64 | `string`（验证码） |
+| http(s) | `object`：`{ code, status, headers }` |
+
+### 示例
+
+```javascript
+// base64
+const base64 = "data:image/png;base64,iVBOR...";
+const code = await tools.getVerificationCode(base64, "请输入验证码");
+console.log("code:", code);
+
+// http
+const result = await tools.getVerificationCode(
+    "https://example.com/captcha.jpg",
+    "请输入验证码"
+);
+console.log(result.code, result.status, result.headers);
+```
+
+### 错误
+
+| 场景 | reject 内容 |
+|---|---|
+| 用户取消 | `"用户取消输入"` |
+| 未注册 handler | `"未注册 getVerificationCode UI 处理器"` |
+
+**建议用 `try/catch` 包住。**
 
 ---
 
-## 八、注意事项
+## 八、tools.startBrowser
 
-1. **只接受一个参数**，不要写 `fetch(url, options)`
-2. **`headers` 值必须是字符串**，否则整段被忽略
-3. **`body` 只在非 GET/HEAD 下生效**
-4. **`headers` 不自动合并默认值**，需要什么自己写
-5. **`cache` 是本地缓存**（`RequestCache`），不是 HTTP 缓存头
-6. **`redirect: "error"`** 只会对 3xx 抛错，其它状态正常返回
-7. **返回的 `text` / `json` / `bytes`** 都是同一个 body 的不同表示，
-   一次请求只发一次，消费不消耗
-8. **`res.json`** 只在 body 能解析为 JSON 时才有值，否则是 `null`
+打开内置浏览器，供用户手动过验证 / 登录，返回 cookie。
+
+### 签名
+
+```typescript
+tools.startBrowser(url: string): Promise<object>
+```
+
+### 参数
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `url` | `string` | 要打开的 URL |
+
+### 返回值
+
+```typescript
+{
+    cookies: { [key: string]: string },
+    url: string
+}
+```
+
+- `cookies`：当前域名下所有 cookie
+- `url`：关闭浏览器时的最终 URL（可能被重定向）
+
+### 示例
+
+```javascript
+try {
+    const result = await tools.startBrowser("https://missav.ws");
+
+    console.log("cookies:", result.cookies);
+    console.log("final url:", result.url);
+
+    // 后续 fetch 会自动带 cookie
+    const res = await tools.fetch({ url: "https://missav.ws/some-page" });
+
+} catch (e) {
+    console.log("用户取消:", e);
+}
+```
+
+### 说明
+
+- 关闭浏览器时，cookie 会**同步到 `HTTPCookieStorage.shared`**
+- 后续 `tools.fetch`（基于 URLSession）**自动带上**
+- 用户点「取消」→ `reject("用户取消")`
 
 ---
 
-## 九、最小迁移指南
+## 九、console
 
-从 `httpRequest` 迁到 `fetch`：
+日志输出到宿主日志面板。
+
+### 支持的方法
+
+| 方法 | 级别 |
+|---|---|
+| `console.log` | 普通 |
+| `console.info` | 普通 |
+| `console.debug` | 普通 |
+| `console.warn` | 警告 |
+| `console.error` | 错误 |
+
+### 特性
+
+- 支持多参数：`console.log("a", 1, true)`
+- 对象自动 `JSON.stringify`
+- `Error` 自动格式化
+- 循环引用兜底
+
+### 示例
 
 ```javascript
-// 旧
-const res = await tools.httpRequest({
-    url: "https://example.com",
-    method: "GET"
-});
+console.log("simple");
+console.log("a", 1, true);
+// a 1 true
 
-// 新（单对象）
-const res = await tools.fetch({
-    url: "https://example.com",
-    method: "GET"
-});
+console.log({ name: "张三" });
+// {"name":"张三"}
 
-// 或更简
-const res = await tools.fetch("https://example.com");
+console.log([1, 2, 3]);
+// [1,2,3]
+
+console.log("user:", { name: "张三" }, "count:", 3);
+// user: {"name":"张三"} count: 3
+
+console.error("fatal");
+// 错误级别
 ```
-
-```javascript
-// 旧
-const res = await tools.httpRequest({
-    url: "https://example.com",
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ a: 1 })
-});
-
-// 新
-const res = await tools.fetch({
-    url: "https://example.com",
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: { a: 1 }
-});
-```
-
-**旧写法仍能跑**，因为 `followRedirects` / `cache`（Bool）字段被兼容。
 
 ---
 
-## 十、FAQ
+## 十、工具方法
 
-**Q: `tools.fetch(url, options)` 为什么 headers 没生效？**
-A: `registerAsyncMethod` 只接受一个参数，第二个参数被丢弃。
-必须写成 `tools.fetch({ url, ...options })`。
+### buildURL
 
-**Q: `res.text` 和 `res.json` 会重复请求吗？**
-A: 不会。两者是同一个 body 的两种表示，已经预先填好。
-
-**Q: 为什么 `res.json` 是 `null`？**
-A: body 不是合法 JSON，或 body 为空。
-
-**Q: 怎么拿二进制？**
-A: 用 `res.bytes`，是 base64 字符串，前端 `atob` 解码即可。
-
-**Q: 怎么带 cookie？**
-A: 手动写到 `headers.Cookie`：
+JS 侧常用工具（不内置，规则里可自行定义）：
 
 ```javascript
-await tools.fetch({
-    url: "https://example.com/api",
-    headers: { "Cookie": "a=1; b=2" }
-});
+function buildURL(host, path, params = {}) {
+
+    const query = Object.entries(params)
+        .filter(([_, v]) => v != null && v !== "")
+        .map(([k, v]) =>
+            `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`
+        )
+        .join("&");
+
+    return `${host}${path}${query ? `?${query}` : ""}`;
+}
 ```
 
-**Q: 怎么并发多个请求？**
-A: 用 `Promise.all`：
+### cookies 对象转 header
 
 ```javascript
-const [a, b] = await Promise.all([
-    tools.fetch("https://example.com/a"),
-    tools.fetch("https://example.com/b")
-]);
+function cookiesToHeader(cookies) {
+
+    return Object.entries(cookies)
+        .map(([k, v]) => `${k}=${v}`)
+        .join("; ");
+}
 ```
 
-**Q: `res.redirects` 什么时候有？**
-A: 仅当 `redirected === true`，即发生过至少一次重定向。
+---
 
-**Q: 为什么 `statusText` 有时候是空字符串？**
-A: 标准状态码有映射（200 → "OK"），非标准码返回 `""`。
+## 十一、错误处理
 
-**Q: `headers` 里传了数字会怎样？**
-A: `as? [String: String]` 会失败，整个 `headers` 被静默忽略。
-务必保证键值都是字符串。
+### 同步方法
+
+`tools.css` / `tools.xp` / `tools.jp` / `tools.toast` 出错时：
+
+- `css` / `xp` / `jp`：返回 `null` / `[]` / `""`，不抛异常
+- `toast`：静默忽略
+
+### 异步方法
+
+`tools.fetch` / `tools.getVerificationCode` / `tools.startBrowser` 会 reject。
+
+**统一模板**：
+
+```javascript
+async function safeCall(fn) {
+    try {
+        return await fn();
+    } catch (e) {
+        console.log("error:", e);
+        return null;
+    }
+}
+
+// 用法
+const code = await safeCall(() =>
+    tools.getVerificationCode(url, "请输入验证码")
+);
 ```
+
+---
+
+## 十二、完整示例
+
+### 1. 页面列表抓取
+
+```javascript
+const host = "https://example.com";
+
+const headers = {
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15"
+};
+
+async function list(pageIndex) {
+
+    const res = await tools.fetch({
+        url: `${host}/list?page=${pageIndex}`,
+        headers
+    });
+
+    if (!res.ok) {
+        tools.toast("请求失败：" + res.status, "xmark.circle.fill");
+        return [];
+    }
+
+    const items = tools.css(res.text, ".video-card");
+
+    return items.map(item => ({
+        title: tools.css(item, ".title@text", 0),
+        cover: tools.css(item, "img@src", 0),
+        url: host + tools.css(item, "a@href", 0)
+    }));
+}
+```
+
+### 2. 详情页 + 播放地址
+
+```javascript
+async function detail(item) {
+
+    const res = await tools.fetch({
+        url: item.url,
+        headers
+    });
+
+    // 用 XPath 找 script 里的视频地址
+    const scripts = tools.xp(res.text, "//script[contains(text(),'m3u8')]/text()");
+
+    let video = null;
+
+    for (const script of scripts) {
+        const match = script.match(/https?:\/\/[^"']+\.m3u8[^"']*/);
+        if (match) {
+            video = match[0];
+            break;
+        }
+    }
+
+    return [{
+        roadIndex: 0,
+        roadName: "线路1",
+        episodes: [{
+            title: item.title,
+            cover: item.cover,
+            detailUrl: item.url,
+            video: video
+        }]
+    }];
+}
+```
+
+### 3. 需要登录 + 验证码
+
+```javascript
+async function loginWithCaptcha(loginUrl) {
+
+    // 1. 浏览器过验证 / 登录
+    let cookies;
+
+    try {
+        const result = await tools.startBrowser(loginUrl);
+        cookies = result.cookies;
+    } catch (e) {
+        tools.toast("已取消", "xmark.circle.fill");
+        return null;
+    }
+
+    // 2. 请求验证码
+    const captchaRes = await tools.fetch({
+        url: `${host}/member/getcode.asp`,
+        headers: {
+            ...headers,
+            "Cookie": cookiesToHeader(cookies),
+            "Referer": loginUrl
+        }
+    });
+
+    // 3. 弹窗输入
+    let code;
+
+    try {
+        const base64 = "data:image/gif;base64," + captchaRes.bytes;
+        code = await tools.getVerificationCode(base64, "请输入验证码");
+    } catch (e) {
+        tools.toast("已取消", "xmark.circle.fill");
+        return null;
+    }
+
+    // 4. 提交
+    const loginRes = await tools.fetch({
+        url: `${host}/member/login.asp`,
+        method: "POST",
+        headers: {
+            ...headers,
+            "Cookie": cookiesToHeader(cookies),
+            "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: `username=admin&password=123&captcha=${code}`
+    });
+
+    console.log("login status:", loginRes.status);
+
+    if (loginRes.ok) {
+        tools.toast("登录成功", "checkmark.circle.fill");
+    } else {
+        tools.toast("登录失败：" + loginRes.status, "xmark.circle.fill");
+    }
+
+    return loginRes.json;
+}
+```
+
+### 4. 带图标提示的完整流程
+
+```javascript
+async function process(url) {
+
+    tools.toast("开始处理", "clock.fill");
+
+    try {
+
+        const res = await tools.fetch({ url });
+
+        if (!res.ok) {
+            tools.toast("请求失败：" + res.status, "xmark.circle.fill");
+            return null;
+        }
+
+        const items = tools.css(res.text, ".item");
+
+        if (items.length === 0) {
+            tools.toast("没有找到数据", "exclamationmark.triangle.fill");
+            return [];
+        }
+
+        tools.toast(`共 ${items.length} 条`, "checkmark.circle.fill");
+
+        return items;
+
+    } catch (e) {
+        tools.toast("处理出错：" + e, "exclamationmark.circle.fill");
+        return null;
+    }
+}
+```
+
+---
+
+## 附录：方法速查
+
+```javascript
+// 解析
+tools.css(html, selector, index?)               // CSS 选择器
+tools.xp(xml, path)                             // XPath
+tools.jp(value, path)                           // JSONPath
+
+// 交互
+tools.toast(message)                            // 弹窗（默认图标）
+tools.toast(message, "bell.fill")               // 弹窗（自定义图标）
+await tools.getVerificationCode(img, title)     // 验证码
+await tools.startBrowser(url)                   // 内置浏览器
+
+// 网络
+await tools.fetch({ url, method, headers, body, ... })
+
+// 日志
+console.log(...)
+console.error(...)
+console.warn(...)
+console.info(...)
+console.debug(...)
+```
+
+---
+
+## 附录：常用 SF Symbol 图标
+
+| 场景 | 推荐图标名 |
+|---|---|
+| 信息 / 提示 | `info.circle` |
+| 成功 | `checkmark.circle.fill` |
+| 失败 / 错误 | `xmark.circle.fill` |
+| 警告 | `exclamationmark.triangle.fill` |
+| 加载 / 刷新 | `arrow.clockwise` |
+| 等待 | `clock.fill` |
+| 通知 | `bell.fill` |
+| 锁定 | `lock.fill` |
+| 删除 | `trash.fill` |
+| 搜索 | `magnifyingglass` |
+| 设置 | `gearshape.fill` |
+| 用户 | `person.fill` |
+| 下载 | `arrow.down.circle.fill` |
+| 上传 | `arrow.up.circle.fill` |
+```
+
+---
+
+## 更新说明
+
+相比上一版，主要变更：
+
+| 位置 | 变更 |
+|---|---|
+| 目录 | `tools.toast` 描述改为「支持自定义图标」 |
+| 接口总览 | `tools.toast` 描述更新 |
+| **六、tools.toast** | 完整重写：新增 `systemName` 参数、常用图标表、注意项 |
+| 十二、完整示例 | 示例里 `tools.toast` 调用带上图标 |
+| 附录 | 新增「常用 SF Symbol 图标」表 |
