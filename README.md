@@ -1,4 +1,3 @@
-```markdown
 # Mobox 规则引擎 JS 接口文档
 
 Mobox 规则引擎通过 `tools` 对象向 JS 规则暴露一组宿主能力。
@@ -23,6 +22,8 @@ Mobox 规则引擎通过 `tools` 对象向 JS 规则暴露一组宿主能力。
 - [十、工具方法](#十工具方法)
 - [十一、错误处理](#十一错误处理)
 - [十二、完整示例](#十二完整示例)
+- [附录：方法速查](#附录方法速查)
+- [附录：常用 SF Symbol 图标](#附录常用-sf-symbol-图标)
 
 ---
 
@@ -740,18 +741,3 @@ console.debug(...)
 | 用户 | `person.fill` |
 | 下载 | `arrow.down.circle.fill` |
 | 上传 | `arrow.up.circle.fill` |
-```
-
----
-
-## 更新说明
-
-相比上一版，主要变更：
-
-| 位置 | 变更 |
-|---|---|
-| 目录 | `tools.toast` 描述改为「支持自定义图标」 |
-| 接口总览 | `tools.toast` 描述更新 |
-| **六、tools.toast** | 完整重写：新增 `systemName` 参数、常用图标表、注意项 |
-| 十二、完整示例 | 示例里 `tools.toast` 调用带上图标 |
-| 附录 | 新增「常用 SF Symbol 图标」表 |
