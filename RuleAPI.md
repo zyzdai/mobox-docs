@@ -614,6 +614,46 @@ function getDecryptSteps() {
 
 ---
 
+
+---
+
+### 使用 CryptoJS
+
+```markdown
+### 使用 CryptoJS
+
+通过 `__import__` 引入 CryptoJS 后，可以直接在规则里使用：
+
+```javascript
+__import__("https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js");
+
+var host = "https://example.com";
+
+async function content(ep) {
+
+    var res = await tools.fetch({
+        url: ep.detailUrl,
+        headers: httpHeaders
+    });
+
+    var encrypted = tools.css(res.text, "#video-data@data-src", 0);
+
+    var decrypted = CryptoJS.AES.decrypt(
+        encrypted,
+        CryptoJS.enc.Utf8.parse("1234567890123456"),
+        {
+            iv: CryptoJS.enc.Utf8.parse("abcdefghijklmnop"),
+            mode: CryptoJS.mode.CBC,
+            padding: CryptoJS.pad.Pkcs7
+        }
+    ).toString(CryptoJS.enc.Utf8);
+
+    return [{
+        video: decrypted,
+        headers: httpHeaders
+    }];
+}
+
 ## 七、完整模板
 
 ```javascript
@@ -865,3 +905,5 @@ await tools.getCache(key)
 console.log(...)
 console.error(...)
 ```
+
+
