@@ -3,7 +3,7 @@
 Mobox 规则引擎通过 `tools` 对象向 JS 规则暴露一组宿主能力。
 
 - 位置：全局对象 `tools`
-- 用途：解析 HTML/XML、处理 JSON、发起网络请求、弹窗、验证码、内置浏览器
+- 用途：解析 HTML/XML、处理 JSON、发起网络请求、弹窗、验证码、内置浏览器、选图
 - 返回：同步方法直接返回；异步方法返回 `Promise`
 
 ---
@@ -18,11 +18,12 @@ Mobox 规则引擎通过 `tools` 对象向 JS 规则暴露一组宿主能力。
 - [六、tools.toast](#六toolstoast)
 - [七、tools.getVerificationCode](#七toolsgetverificationcode)
 - [八、tools.startBrowser](#八toolsstartbrowser)
-- [九、tools.fetch](#九toolsfetch)
-- [十、console](#十console)
-- [十一、工具方法](#十一工具方法)
-- [十二、错误处理](#十二错误处理)
-- [十三、完整示例](#十三完整示例)
+- [九、tools.pickPhoto](#九toolspickphoto)
+- [十、tools.fetch](#十toolsfetch)
+- [十一、console](#十一console)
+- [十二、工具方法](#十二工具方法)
+- [十三、错误处理](#十三错误处理)
+- [十四、完整示例](#十四完整示例)
 - [附录：方法速查](#附录方法速查)
 - [附录：常用 SF Symbol 图标](#附录常用-sf-symbol-图标)
 
@@ -64,6 +65,7 @@ async function main() {
 | `tools.toast` | 同步 | 弹窗提示（支持自定义图标） |
 | `tools.getVerificationCode` | 异步 | 弹验证码输入框 |
 | `tools.startBrowser` | 异步 | 打开内置浏览器 |
+| `tools.pickPhoto` | 异步 | 从相册选择图片，返回 base64 |
 | `tools.fetch` | 异步 | 发起网络请求 |
 | `console.log` | 同步 | 日志输出 |
 
@@ -99,6 +101,24 @@ tools.css(html: string, selector: string, index?: number): string | string[]
 | `@任意属性名` | 元素该属性的值 |
 
 **不写 `@`** → 返回 `outerHTML`。
+
+### 属性名通配
+
+| 写法 | 说明 |
+|---|---|
+| `*suffix` | 属性名以 `suffix` 结尾 |
+| `prefix*` | 属性名以 `prefix` 开头 |
+| `*keyword*` | 属性名包含 `keyword` |
+
+通配时按文档顺序取**第一个命中的属性值**。
+
+```javascript
+// 属性名以 -bg-loader-url 结尾的任意属性
+tools.css(html, "div@*-bg-loader-url", 0);
+
+// 属性名以 data- 开头的任意属性
+tools.css(html, "div@data-*", 0);
+```
 
 ### 返回值
 
@@ -136,6 +156,12 @@ tools.css(html, ".item@data-id");
 tools.css(html, ".item", 0);
 // "<div class=\"item\" data-id=\"1\">...</div>"
 ```
+
+### 注意
+
+- 同一个 HTML 字符串会命中 Document 缓存，不会重复 parse
+- 超过 16MB 的 HTML 不进入缓存，避免内存常驻
+- 解析失败时 `context.exception` 会被设置为 `Error`，同时返回 `NSNull`
 
 ---
 
@@ -407,7 +433,613 @@ try {
 
 ---
 
-## 九、tools.fetch
+## 九、tools.pickPhoto
+
+从系统相册选择图片，返回 base64 数据，可直接用于 `tools.fetch` 的 `__multipart__` / `__blob__` 上传。
+
+### 签名
+
+```typescript
+tools.pickPhoto(options?: PickPhotoOptions): Promise<PickedImage[]>
+
+interface PickPhotoOptions {
+    multiple?: boolean;   // 是否多选，默认 false
+    maxCount?: number;    // 最多选几张，默认 1
+}
+
+interface PickedImage {
+    base64: string;       // 形如 "data:image/jpeg;base64,..."
+    mimeType: string;     // 如 "image/jpeg"
+    name: string;         // 原始文件名，如 "IMG_0001.JPG"
+}
+```
+
+### 参数
+
+#### multiple
+
+| 类型 | 默认 |
+|---|---|
+| `boolean` | `false` |
+
+是否允许多选。
+
+```javascript
+await tools.pickPhoto({ multiple: true });
+```
+
+#### maxCount
+
+| 类型 | 默认 |
+|---|---|
+| `number` | `1` |
+
+最多选几张。仅当 `multiple: true` 时生效；`multiple: false` 时会被强制设为 `1`。
+
+```javascript
+await tools.pickPhoto({ multiple: true, maxCount: 9 });
+```
+
+### 返回值
+
+| 场景 | 结果 |
+|---|---|
+| 用户选中 | resolve `PickedImage[]`，至少 1 个元素 |
+| 用户取消 | reject `"用户取消选择"` |
+| 未注册 handler | reject `"未注册 pickPhoto UI 处理器"` |
+
+每个 `PickedImage` 包含：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `base64` | `string` | `data:image/xxx;base64,...` 完整 data URL |
+| `mimeType` | `string` | 如 `image/jpeg` / `image/png` / `image/heic` |
+| `name` | `string` | 原始文件名，可能为空 |
+
+**示例返回：**
+
+```javascript
+[
+    {
+        base64: "data:image/jpeg;base64,/9j/4AAQSkZJRg...",
+        mimeType: "image/jpeg",
+        name: "IMG_0001.JPG"
+    },
+    {
+        base64: "data:image/png;base64,iVBORw0KGgo...",
+        mimeType: "image/png",
+        name: "IMG_0002.PNG"
+    }
+]
+```
+
+### 基本用法
+
+#### 1. 单选
+
+```javascript
+async function pickOne() {
+    try {
+        const images = await tools.pickPhoto();
+
+        if (images.length === 0) {
+            return null;
+        }
+
+        const image = images[0];
+        console.log("mime:", image.mimeType);
+        console.log("name:", image.name);
+        console.log("base64 长度:", image.base64.length);
+
+        return image;
+
+    } catch (e) {
+        console.log("取消或失败:", e);
+        return null;
+    }
+}
+```
+
+#### 2. 多选
+
+```javascript
+async function pickMultiple() {
+    try {
+        const images = await tools.pickPhoto({
+            multiple: true,
+            maxCount: 9
+        });
+
+        console.log("选了", images.length, "张");
+
+        return images.map(img => ({
+            name: img.name,
+            mimeType: img.mimeType,
+            size: img.base64.length
+        }));
+
+    } catch (e) {
+        console.log("取消:", e);
+        return [];
+    }
+}
+```
+
+#### 3. 显式单选 + 限制 1 张
+
+```javascript
+const images = await tools.pickPhoto({
+    multiple: false,
+    maxCount: 1
+});
+```
+
+### 与 tools.fetch 配合上传
+
+#### 1. 单图 multipart 上传
+
+```javascript
+async function uploadSingle() {
+    // 1. 选图
+    let images;
+    try {
+        images = await tools.pickPhoto();
+    } catch (e) {
+        tools.toast("已取消", "xmark.circle.fill");
+        return null;
+    }
+
+    const image = images[0];
+
+    // 2. 去掉 data URL 前缀，只留纯 base64
+    const base64 = image.base64.replace(/^data:[^;]+;base64,/, "");
+
+    // 3. multipart 上传
+    const res = await tools.fetch({
+        url: "https://example.com/api/upload",
+        method: "POST",
+        body: {
+            __multipart__: true,
+            parts: [
+                {
+                    name: "file",
+                    filename: image.name || "image.jpg",
+                    mimeType: image.mimeType,
+                    base64: base64
+                }
+            ]
+        }
+    });
+
+    if (!res.ok) {
+        tools.toast("上传失败：" + res.status, "xmark.circle.fill");
+        return null;
+    }
+
+    tools.toast("上传成功", "checkmark.circle.fill");
+    return res.json;
+}
+```
+
+> **注意**：`image.base64` 是带 `data:` 前缀的完整 data URL，而 `tools.fetch` 的 `__multipart__` / `__blob__` 期望的是**纯 base64**（不含前缀），所以要用正则去掉 `data:image/xxx;base64,` 部分。如果不去掉，服务端收到的文件内容会包含这段前缀字符串，导致图片损坏。
+
+#### 2. 多图批量上传
+
+```javascript
+async function uploadMultiple() {
+    let images;
+    try {
+        images = await tools.pickPhoto({ multiple: true, maxCount: 9 });
+    } catch (e) {
+        return [];
+    }
+
+    const parts = images.map((img, i) => ({
+        name: "file" + i,
+        filename: img.name || `image_${i}.jpg`,
+        mimeType: img.mimeType,
+        base64: img.base64.replace(/^data:[^;]+;base64,/, "")
+    }));
+
+    const res = await tools.fetch({
+        url: "https://example.com/api/upload-multi",
+        method: "POST",
+        body: {
+            __multipart__: true,
+            parts
+        }
+    });
+
+    return res.json;
+}
+```
+
+#### 3. Blob 方式上传（单文件）
+
+```javascript
+async function uploadAsBlob() {
+    const images = await tools.pickPhoto();
+    const image = images[0];
+
+    const base64 = image.base64.replace(/^data:[^;]+;base64,/, "");
+
+    const res = await tools.fetch({
+        url: "https://example.com/api/upload-raw",
+        method: "POST",
+        body: {
+            __blob__: base64,
+            mimeType: image.mimeType
+        }
+    });
+
+    return res.json;
+}
+```
+
+#### 4. 表单字段 + 文件混合
+
+```javascript
+async function uploadWithMeta() {
+    const images = await tools.pickPhoto();
+    const image = images[0];
+    const base64 = image.base64.replace(/^data:[^;]+;base64,/, "");
+
+    const res = await tools.fetch({
+        url: "https://example.com/api/upload",
+        method: "POST",
+        body: {
+            __multipart__: true,
+            parts: [
+                {
+                    name: "file",
+                    filename: image.name || "image.jpg",
+                    mimeType: image.mimeType,
+                    base64: base64
+                },
+                {
+                    name: "description",
+                    text: "用户上传的头像"
+                },
+                {
+                    name: "userId",
+                    text: "12345"
+                }
+            ]
+        }
+    });
+
+    return res.json;
+}
+```
+
+### 单独读 base64（不上传）
+
+#### 1. 预览显示
+
+```javascript
+async function preview() {
+    const images = await tools.pickPhoto();
+    const image = images[0];
+
+    // image.base64 是完整 data URL，可以直接给 <img src>
+    // 如果宿主支持渲染图片
+    return image.base64;
+}
+```
+
+#### 2. 只取纯 base64
+
+```javascript
+async function getPureBase64() {
+    const images = await tools.pickPhoto();
+    const image = images[0];
+
+    // 完整 data URL
+    const dataURL = image.base64;
+
+    // 纯 base64
+    const pureBase64 = dataURL.replace(/^data:[^;]+;base64,/, "");
+
+    return {
+        dataURL,
+        pureBase64,
+        mimeType: image.mimeType,
+        name: image.name
+    };
+}
+```
+
+#### 3. 解码 base64 拿字节长度
+
+```javascript
+async function getSize() {
+    const images = await tools.pickPhoto();
+    const image = images[0];
+    const pureBase64 = image.base64.replace(/^data:[^;]+;base64,/, "");
+
+    // 估算字节数
+    const padding = (pureBase64.match(/=+$/) || [""])[0].length;
+    const bytes = (pureBase64.length * 3) / 4 - padding;
+
+    return {
+        bytes,
+        kb: (bytes / 1024).toFixed(1) + " KB",
+        mb: (bytes / 1024 / 1024).toFixed(2) + " MB"
+    };
+}
+```
+
+### 错误处理
+
+统一模板：
+
+```javascript
+async function safePickPhoto(options) {
+    try {
+        return await tools.pickPhoto(options);
+    } catch (e) {
+        // e 可能是字符串（"用户取消选择" / "未注册 pickPhoto UI 处理器"）
+        // 也可能是 Error 对象
+        const message = (e && e.message) ? e.message : String(e);
+
+        if (message.includes("取消")) {
+            console.log("用户取消");
+        } else if (message.includes("未注册")) {
+            console.log("宿主未注册 pickPhoto 处理器");
+        } else {
+            console.log("选择失败:", message);
+        }
+
+        return null;
+    }
+}
+
+const images = await safePickPhoto();
+if (!images || images.length === 0) {
+    return;
+}
+```
+
+错误场景：
+
+| 场景 | reject 内容 |
+|---|---|
+| 用户取消 | `"用户取消选择"` |
+| 未注册 handler | `"未注册 pickPhoto UI 处理器"` |
+
+> 和 `getVerificationCode` / `startBrowser` 不同，`pickPhoto` 的 reject 是**字符串**而不是 Error 对象，`catch` 里要用 `String(e)` 或判断 `e.message` 是否存在。
+
+### 注意事项
+
+#### 1. base64 前缀必须去掉
+
+`pickPhoto` 返回的 `base64` 是**完整 data URL**：
+
+```
+data:image/jpeg;base64,/9j/4AAQSkZJRg...
+```
+
+而 `tools.fetch` 的 `__multipart__` / `__blob__` / `__binary__` 期望**纯 base64**：
+
+```
+/9j/4AAQSkZJRg...
+```
+
+**必须去掉前缀：**
+
+```javascript
+const pureBase64 = image.base64.replace(/^data:[^;]+;base64,/, "");
+```
+
+否则服务端收到的文件内容开头会多出一段 `data:image/jpeg;base64,` 文本，导致图片无法识别。
+
+#### 2. multiple: false 时 maxCount 被忽略
+
+```javascript
+// 实际最多 1 张
+await tools.pickPhoto({ multiple: false, maxCount: 9 });
+```
+
+#### 3. 大文件性能
+
+- `base64` 会让数据膨胀约 33%
+- 多选 9 张高清图可能占用几十 MB 内存
+- 建议在 JS 侧做大小检查，避免超大文件上传失败
+
+```javascript
+const pureBase64 = image.base64.replace(/^data:[^;]+;base64,/, "");
+const bytes = (pureBase64.length * 3) / 4;
+const maxBytes = 10 * 1024 * 1024; // 10MB
+
+if (bytes > maxBytes) {
+    tools.toast("图片过大，请选择小于 10MB 的图片", "exclamationmark.triangle.fill");
+    return;
+}
+```
+
+#### 4. 不支持 await 之外的调用方式
+
+```javascript
+// ✅ 正确
+const images = await tools.pickPhoto();
+
+// ❌ 错误：会拿到 Promise 本身
+const images = tools.pickPhoto();
+```
+
+#### 5. 一次选择后不会自动释放内存
+
+返回的 `base64` 字符串会一直存在于 JS 作用域，直到你手动置 `null` 或函数返回。多张高清图建议用完即丢：
+
+```javascript
+let images = await tools.pickPhoto({ multiple: true });
+const parts = images.map(...);
+images = null; // 让 GC 回收
+```
+
+### 与其他异步方法对比
+
+| 能力 | `pickPhoto` | `getVerificationCode` | `startBrowser` |
+|---|---|---|---|
+| 类型 | 异步 | 异步 | 异步 |
+| 用户取消 reject | `"用户取消选择"` | `"用户取消输入"` | `"用户取消"` |
+| 返回 | `PickedImage[]` | `string` 或 `{code,status,headers}` | `{cookies, url}` |
+| 需注册 handler | ✅ | ✅ | ✅ |
+| 依赖 UI | 相册 | 验证码弹窗 | 内置浏览器 |
+
+### 完整业务示例
+
+#### 示例 1：更换头像
+
+```javascript
+async function changeAvatar() {
+    // 1. 选图
+    let images;
+    try {
+        images = await tools.pickPhoto();
+    } catch (e) {
+        tools.toast("已取消", "xmark.circle.fill");
+        return null;
+    }
+
+    if (!images || images.length === 0) {
+        return null;
+    }
+
+    const image = images[0];
+    const base64 = image.base64.replace(/^data:[^;]+;base64,/, "");
+
+    // 2. 上传
+    tools.toast("上传中...", "arrow.clockwise");
+
+    const res = await tools.fetch({
+        url: "https://example.com/api/user/avatar",
+        method: "POST",
+        credentials: "include",
+        body: {
+            __multipart__: true,
+            parts: [
+                {
+                    name: "avatar",
+                    filename: image.name || "avatar.jpg",
+                    mimeType: image.mimeType,
+                    base64: base64
+                }
+            ]
+        }
+    });
+
+    if (!res.ok) {
+        tools.toast("上传失败：" + res.status, "xmark.circle.fill");
+        return null;
+    }
+
+    tools.toast("头像已更新", "checkmark.circle.fill");
+    return res.json;
+}
+```
+
+#### 示例 2：多图发布
+
+```javascript
+async function publishPost(content) {
+    let images;
+    try {
+        images = await tools.pickPhoto({
+            multiple: true,
+            maxCount: 9
+        });
+    } catch (e) {
+        tools.toast("已取消", "xmark.circle.fill");
+        return null;
+    }
+
+    if (!images || images.length === 0) {
+        tools.toast("至少选择一张图片", "exclamationmark.triangle.fill");
+        return null;
+    }
+
+    const parts = [
+        { name: "content", text: content }
+    ];
+
+    images.forEach((img, i) => {
+        parts.push({
+            name: "images[]",
+            filename: img.name || `image_${i}.jpg`,
+            mimeType: img.mimeType,
+            base64: img.base64.replace(/^data:[^;]+;base64,/, "")
+        });
+    });
+
+    tools.toast(`上传 ${images.length} 张图片...`, "arrow.clockwise");
+
+    const res = await tools.fetch({
+        url: "https://example.com/api/post",
+        method: "POST",
+        credentials: "include",
+        body: {
+            __multipart__: true,
+            parts
+        }
+    });
+
+    if (!res.ok) {
+        tools.toast("发布失败：" + res.status, "xmark.circle.fill");
+        return null;
+    }
+
+    tools.toast("发布成功", "checkmark.circle.fill");
+    return res.json;
+}
+```
+
+#### 示例 3：带重试的上传
+
+```javascript
+async function uploadWithRetry(image, retries = 3) {
+    const base64 = image.base64.replace(/^data:[^;]+;base64,/, "");
+
+    for (let i = 0; i < retries; i++) {
+        try {
+            const res = await tools.fetch({
+                url: "https://example.com/api/upload",
+                method: "POST",
+                body: {
+                    __multipart__: true,
+                    parts: [
+                        {
+                            name: "file",
+                            filename: image.name || "image.jpg",
+                            mimeType: image.mimeType,
+                            base64: base64
+                        }
+                    ]
+                }
+            });
+
+            if (res.ok) {
+                return res.json;
+            }
+
+            if (res.status >= 500 && i < retries - 1) {
+                await new Promise(r => setTimeout(r, 500 * (i + 1)));
+                continue;
+            }
+
+            throw new Error(`上传失败: ${res.status}`);
+
+        } catch (e) {
+            if (i === retries - 1) throw e;
+            await new Promise(r => setTimeout(r, 500 * (i + 1)));
+        }
+    }
+}
+```
+
+---
+
+## 十、tools.fetch
 
 Mobox 规则引擎的网络请求接口，兼容浏览器原生 `fetch` 的主要能力，并针对规则抓取场景做了扩展。
 
@@ -415,7 +1047,7 @@ Mobox 规则引擎的网络请求接口，兼容浏览器原生 `fetch` 的主�
 - 类型：异步，返回 `Promise`
 - 响应对象：`HTTPResponsePayload` 映射，含 `status` / `headers` / `text` / `json` / `bytes` 等
 
-### 9.1 函数签名
+### 10.1 函数签名
 
 ```typescript
 tools.fetch(url: string): Promise<Response>
@@ -444,7 +1076,7 @@ interface FetchOptions {
 }
 ```
 
-### 9.2 参数详解
+### 10.2 参数详解
 
 #### url
 
@@ -512,7 +1144,7 @@ tools.fetch({
 | `object` | JSON / 表单 / multipart / blob（按保留 key 识别） |
 | `Data` | 原始二进制（仅 Swift 侧直接调用时） |
 
-详见 [9.3 body 类型全表](#93-body-类型全表)。
+详见 [10.3 body 类型全表](#103-body-类型全表)。
 
 #### credentials
 
@@ -624,7 +1256,7 @@ tools.fetch({
 
 超时后 reject。
 
-### 9.3 body 类型全表
+### 10.3 body 类型全表
 
 | JS 传法 | Swift 类型 | 自动 Content-Type | 走缓存 |
 |---|---|---|---|
@@ -803,7 +1435,7 @@ const res = await tools.fetch({
 });
 ```
 
-### 9.4 响应对象
+### 10.4 响应对象
 
 `tools.fetch` resolve 的 `Response` 结构：
 
@@ -872,7 +1504,7 @@ if (res.redirected) {
 
 > **注意**：`res.text` 是同步属性，`res.text()` 是异步方法。规则代码里 `tools.css(res.text, ...)` 走属性，正确。
 
-### 9.5 重定向
+### 10.5 重定向
 
 默认 `follow`，自动跟随，最终 `res.url` 是最后一跳地址。
 
@@ -908,7 +1540,7 @@ try {
 }
 ```
 
-### 9.6 Cookie 与 credentials
+### 10.6 Cookie 与 credentials
 
 **Cookie 来源：**
 
@@ -963,7 +1595,7 @@ const res = await tools.fetch({
 });
 ```
 
-### 9.7 缓存
+### 10.7 缓存
 
 **默认行为：**
 
@@ -1003,7 +1635,7 @@ tools.fetch({ url: "...", cache: false });  // → no-store
 tools.fetch({ url: "...", cache: true });   // → default
 ```
 
-### 9.8 超时与取消
+### 10.8 超时与取消
 
 **超时：**
 
@@ -1028,7 +1660,7 @@ tools.cancel(p._taskId);
 
 > 第一版可以不实现取消，超时足够覆盖大部分场景。
 
-### 9.9 错误处理
+### 10.9 错误处理
 
 `tools.fetch` 在以下情况 reject：
 
@@ -1070,7 +1702,7 @@ console.log(res.status);  // 404
 
 ---
 
-## 十、console
+## 十一、console
 
 日志输出到宿主日志面板。
 
@@ -1113,7 +1745,7 @@ console.error("fatal");
 
 ---
 
-## 十一、工具方法
+## 十二、工具方法
 
 ### buildURL
 
@@ -1144,9 +1776,17 @@ function cookiesToHeader(cookies) {
 }
 ```
 
+### 去掉 base64 data URL 前缀
+
+```javascript
+function pureBase64(dataURL) {
+    return dataURL.replace(/^data:[^;]+;base64,/, "");
+}
+```
+
 ---
 
-## 十二、错误处理
+## 十三、错误处理
 
 ### 同步方法
 
@@ -1157,7 +1797,7 @@ function cookiesToHeader(cookies) {
 
 ### 异步方法
 
-`tools.fetch` / `tools.getVerificationCode` / `tools.startBrowser` 会 reject。
+`tools.fetch` / `tools.getVerificationCode` / `tools.startBrowser` / `tools.pickPhoto` 会 reject。
 
 **统一模板**：
 
@@ -1179,7 +1819,7 @@ const code = await safeCall(() =>
 
 ---
 
-## 十三、完整示例
+## 十四、完整示例
 
 ### 1. 页面列表抓取
 
@@ -1376,7 +2016,26 @@ async function uploadImage(imageBase64, fileName, mimeType) {
 }
 ```
 
-### 6. 搜索 + 解析
+### 6. 选图 + 上传
+
+```javascript
+async function pickAndUpload() {
+    let images;
+    try {
+        images = await tools.pickPhoto();
+    } catch (e) {
+        tools.toast("已取消", "xmark.circle.fill");
+        return null;
+    }
+
+    const image = images[0];
+    const base64 = pureBase64(image.base64);
+
+    return await uploadImage(base64, image.name || "image.jpg", image.mimeType);
+}
+```
+
+### 7. 搜索 + 解析
 
 ```javascript
 async function search(keyWord, pageIndex) {
@@ -1401,7 +2060,7 @@ async function search(keyWord, pageIndex) {
 }
 ```
 
-### 7. 带重试的请求
+### 8. 带重试的请求
 
 ```javascript
 async function fetchWithRetry(url, options = {}, retries = 3) {
@@ -1437,6 +2096,8 @@ tools.toast(message)                            // 弹窗（默认图标）
 tools.toast(message, "bell.fill")               // 弹窗（自定义图标）
 await tools.getVerificationCode(img, title)     // 验证码
 await tools.startBrowser(url)                   // 内置浏览器
+await tools.pickPhoto()                         // 选图（单选）
+await tools.pickPhoto({ multiple: true, maxCount: 9 })  // 选图（多选）
 
 // 网络
 await tools.fetch({ url, method, headers, body, ... })
@@ -1487,6 +2148,21 @@ res.headers["Content-Type"]
 res.text          // 同步字符串
 res.json          // 已解析对象
 res.bytes         // base64
+```
+
+**pickPhoto 速查：**
+
+```javascript
+const images = await tools.pickPhoto();                        // 单选
+const images = await tools.pickPhoto({ multiple: true, maxCount: 9 }); // 多选
+
+// 每个 image
+image.base64      // "data:image/jpeg;base64,..."
+image.mimeType    // "image/jpeg"
+image.name        // "IMG_0001.JPG"
+
+// 去掉前缀
+const pure = image.base64.replace(/^data:[^;]+;base64,/, "");
 ```
 
 **与原生 fetch 差异：**
