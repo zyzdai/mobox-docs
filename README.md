@@ -18,10 +18,11 @@ Mobox 规则引擎通过 `tools` 对象向 JS 规则暴露一组宿主能力。
 - [六、tools.toast](#六toolstoast)
 - [七、tools.getVerificationCode](#七toolsgetverificationcode)
 - [八、tools.startBrowser](#八toolsstartbrowser)
-- [九、console](#九console)
-- [十、工具方法](#十工具方法)
-- [十一、错误处理](#十一错误处理)
-- [十二、完整示例](#十二完整示例)
+- [九、tools.fetch](#九toolsfetch)
+- [十、console](#十console)
+- [十一、工具方法](#十一工具方法)
+- [十二、错误处理](#十二错误处理)
+- [十三、完整示例](#十三完整示例)
 - [附录：方法速查](#附录方法速查)
 - [附录：常用 SF Symbol 图标](#附录常用-sf-symbol-图标)
 
@@ -63,7 +64,7 @@ async function main() {
 | `tools.toast` | 同步 | 弹窗提示（支持自定义图标） |
 | `tools.getVerificationCode` | 异步 | 弹验证码输入框 |
 | `tools.startBrowser` | 异步 | 打开内置浏览器 |
-| `tools.fetch` | 异步 | 发起网络请求（见 `tools.fetch.md`） |
+| `tools.fetch` | 异步 | 发起网络请求 |
 | `console.log` | 同步 | 日志输出 |
 
 ---
@@ -293,21 +294,6 @@ tools.toast("信息", "info.circle");
 tools.toast("密码错误.", "exclamationmark.circle.fill");
 ```
 
-### 常用 SF Symbol 图标
-
-| 图标名 | 用途 |
-|---|---|
-| `info.circle` | 信息 |
-| `checkmark.circle.fill` | 成功 |
-| `xmark.circle.fill` | 失败 |
-| `exclamationmark.triangle.fill` | 警告 |
-| `exclamationmark.circle.fill` | 错误 |
-| `bell.fill` | 通知（默认） |
-| `arrow.clockwise` | 加载 / 刷新 |
-| `clock.fill` | 等待 |
-| `lock.fill` | 加密 / 锁定 |
-| `trash.fill` | 删除 |
-
 ### 注意
 
 - **不要 `await`**
@@ -421,7 +407,670 @@ try {
 
 ---
 
-## 九、console
+## 九、tools.fetch
+
+Mobox 规则引擎的网络请求接口，兼容浏览器原生 `fetch` 的主要能力，并针对规则抓取场景做了扩展。
+
+- 位置：`tools.fetch`
+- 类型：异步，返回 `Promise`
+- 响应对象：`HTTPResponsePayload` 映射，含 `status` / `headers` / `text` / `json` / `bytes` 等
+
+### 9.1 函数签名
+
+```typescript
+tools.fetch(url: string): Promise<Response>
+
+tools.fetch(options: FetchOptions): Promise<Response>
+
+tools.fetch(url: string, options: FetchOptions): Promise<Response>
+```
+
+三种调用形式等价，推荐用**单对象形式**。
+
+```typescript
+interface FetchOptions {
+    url: string;
+    method?: string;            // 默认 "GET"
+    headers?: Record<string, string>;
+    body?: string | object | BlobLike;
+    credentials?: "omit" | "same-origin" | "include";  // 默认 "same-origin"
+    redirect?: "follow" | "manual" | "error";           // 默认 "follow"
+    cache?: "default" | "no-store" | "no-cache"
+          | "reload" | "force-cache" | "only-if-cached"; // 默认 "default"
+    timeout?: number;           // 秒，默认 10
+
+    // 旧字段（兼容）
+    followRedirects?: boolean;  // 映射到 redirect
+}
+```
+
+### 9.2 参数详解
+
+#### url
+
+| 类型 | 必填 |
+|---|---|
+| `string` | ✅ |
+
+支持 `http://`、`https://`。会做宽松 URL 解析（自动补 scheme、去空白）。
+
+```javascript
+tools.fetch({ url: "https://example.com/a" });
+```
+
+#### method
+
+| 类型 | 默认 |
+|---|---|
+| `string` | `"GET"` |
+
+大小写不敏感，内部会 `uppercased()`。
+
+```javascript
+tools.fetch({
+    url: "https://example.com/api",
+    method: "POST"
+});
+```
+
+支持：`GET` / `HEAD` / `POST` / `PUT` / `PATCH` / `DELETE` 等所有 HTTP 方法。
+
+> `GET` / `HEAD` 不会发送 body，即使传了 `body` 也会被忽略。
+
+#### headers
+
+| 类型 | 默认 |
+|---|---|
+| `Record<string, string>` | `{}` |
+
+自定义请求头。**优先级最高**：如果这里设置了 `Content-Type` / `Cookie` / `User-Agent`，不会被自动逻辑覆盖。
+
+```javascript
+tools.fetch({
+    url: "https://example.com/api",
+    headers: {
+        "Accept": "application/json",
+        "Referer": "https://example.com/",
+        "X-Custom": "abc"
+    }
+});
+```
+
+**自动补充规则：**
+
+| Header | 何时自动设置 |
+|---|---|
+| `User-Agent` | 未设置时用全局 UA（`GlobalUserAgent.value`） |
+| `Content-Type` | 未设置时按 body 类型推导（见 body 类型全表） |
+| `Cookie` | 未设置时按 `credentials` 从 CookieStore 注入 |
+
+#### body
+
+| 类型 | 说明 |
+|---|---|
+| `string` | 纯文本 |
+| `object` | JSON / 表单 / multipart / blob（按保留 key 识别） |
+| `Data` | 原始二进制（仅 Swift 侧直接调用时） |
+
+详见 [9.3 body 类型全表](#93-body-类型全表)。
+
+#### credentials
+
+| 值 | 行为 |
+|---|---|
+| `"omit"` | 不发送 Cookie |
+| `"same-origin"`（默认） | 同源（scheme + host + port 一致）才发送 Cookie |
+| `"include"` | 总是发送 Cookie（跨域也发） |
+
+```javascript
+// 跨域请求需要带 Cookie
+tools.fetch({
+    url: "https://api.example.com/list",
+    credentials: "include"
+});
+
+// 完全不带 Cookie
+tools.fetch({
+    url: "https://third-party.com/api",
+    credentials: "omit"
+});
+```
+
+> 如果 `headers` 里手动设置了 `Cookie`，以手动为准，`credentials` 不再生效。
+
+#### redirect
+
+| 值 | 行为 |
+|---|---|
+| `"follow"`（默认） | 自动跟随重定向，最终返回最后一跳响应 |
+| `"manual"` | 不跟随，返回 3xx 响应给 JS |
+| `"error"` | 遇到 3xx 直接 reject |
+
+```javascript
+// manual：手动处理重定向
+const res = await tools.fetch({
+    url: "https://example.com/a",
+    redirect: "manual"
+});
+
+if (res.status >= 300 && res.status < 400) {
+    console.log("跳转到:", res.headers["Location"]);
+}
+
+// error：重定向即报错
+try {
+    await tools.fetch({
+        url: "https://example.com/a",
+        redirect: "error"
+    });
+} catch (e) {
+    console.log("重定向被拒绝:", e.message);
+}
+```
+
+**兼容旧字段：**
+
+```javascript
+// followRedirects: true  → redirect: "follow"
+// followRedirects: false → redirect: "manual"
+tools.fetch({
+    url: "https://example.com/a",
+    followRedirects: false
+});
+```
+
+#### cache
+
+| 值 | 读缓存 | 写缓存 | 说明 |
+|---|---|---|---|
+| `"default"` | ✅ | ✅ | 正常走缓存 |
+| `"no-store"` | ❌ | ❌ | 完全不缓存 |
+| `"no-cache"` | ❌ | ✅ | 跳过读取，但可写 |
+| `"reload"` | ❌ | ✅ | 强制重新请求 |
+| `"force-cache"` | ✅ | ✅ | 优先读缓存 |
+| `"only-if-cached"` | ✅ | ❌ | 只用缓存 |
+
+```javascript
+await tools.fetch({
+    url: "https://example.com/api",
+    cache: "no-store"
+});
+```
+
+**兼容旧字段：**
+
+```javascript
+// cache: true  → cache: "default"
+// cache: false → cache: "no-store"
+tools.fetch({ url: "...", cache: false });
+```
+
+**重要规则：**
+
+> **只有 `GET` / `HEAD` 且非上传类请求才会走缓存。** `POST` / `PUT` / `PATCH` / `DELETE` 和 `multipart` / `blob` body 的请求一律绕过缓存，传 `cache` 也不生效。这符合 HTTP 语义和原生 `fetch` 行为。
+
+#### timeout
+
+| 类型 | 默认 |
+|---|---|
+| `number`（秒） | `10` |
+
+```javascript
+tools.fetch({
+    url: "https://example.com/slow",
+    timeout: 30
+});
+```
+
+超时后 reject。
+
+### 9.3 body 类型全表
+
+| JS 传法 | Swift 类型 | 自动 Content-Type | 走缓存 |
+|---|---|---|---|
+| `"字符串"` | `.text` | `text/plain;charset=UTF-8` | ✅（仅 GET/HEAD） |
+| `{ a: 1 }` | `.json` | `application/json` | ❌（POST 不缓存） |
+| `[1,2,3]` | `.json`（包 `__array__`） | `application/json` | ❌ |
+| `{ __form__: {...} }` | `.form` | `application/x-www-form-urlencoded;charset=UTF-8` | ❌ |
+| `{ __multipart__: true, parts: [...] }` | `.multipart` | `multipart/form-data; boundary=...` | ❌ 强制绕过 |
+| `{ __blob__: "base64", mimeType: "..." }` | `.blob` | 用 `mimeType` | ❌ 强制绕过 |
+| `{ __binary__: true, base64: "..." }` | `.data` | 不设（需手动） | ❌ |
+| `Data`（Swift 侧） | `.data` | 不设 | ❌ |
+
+#### JSON
+
+JS 传对象 → 自动 `JSONSerialization` + `Content-Type: application/json`。
+
+```javascript
+const res = await tools.fetch({
+    url: "https://api.example.com/user",
+    method: "POST",
+    body: {
+        name: "张三",
+        age: 20,
+        tags: ["a", "b"]
+    }
+});
+```
+
+**数组**会被包一层：
+
+```javascript
+body: [1, 2, 3]
+// 服务端收到: {"__array__":[1,2,3]}
+```
+
+如果服务端要裸数组，用字符串手动序列化：
+
+```javascript
+body: JSON.stringify([1, 2, 3]),
+headers: { "Content-Type": "application/json" }
+```
+
+**`__json__` 兜底：** 如果业务 JSON 恰好有 `__form__` / `__multipart__` / `__blob__` / `__binary__` 字段，会被误判。用 `__json__` 显式声明：
+
+```javascript
+body: {
+    __json__: {
+        __form__: "这是普通字段，不是表单",
+        name: "张三"
+    }
+}
+```
+
+#### 纯文本
+
+```javascript
+const res = await tools.fetch({
+    url: "https://api.example.com/echo",
+    method: "POST",
+    body: "hello world"
+});
+// 自动 Content-Type: text/plain;charset=UTF-8
+```
+
+想用别的类型，显式设置：
+
+```javascript
+tools.fetch({
+    url: "...",
+    method: "POST",
+    headers: { "Content-Type": "text/xml" },
+    body: "<root></root>"
+});
+```
+
+#### 表单 urlencoded
+
+用 `__form__` 包裹：
+
+```javascript
+const res = await tools.fetch({
+    url: "https://api.example.com/login",
+    method: "POST",
+    body: {
+        __form__: {
+            username: "admin",
+            password: "123456",
+            remember: true
+        }
+    }
+});
+// Content-Type: application/x-www-form-urlencoded;charset=UTF-8
+// body: username=admin&password=123456&remember=true
+```
+
+key 和 value 都会做 URL 编码。
+
+#### multipart 文件上传
+
+用 `__multipart__: true` + `parts` 数组：
+
+```javascript
+const res = await tools.fetch({
+    url: "https://api.example.com/upload",
+    method: "POST",
+    body: {
+        __multipart__: true,
+        parts: [
+            // 文件 part
+            {
+                name: "file",
+                filename: "a.webp",
+                mimeType: "image/webp",
+                base64: "UklGRiQAAABXRUJQVlA4..."  // 文件字节 base64
+            },
+            // 普通文本字段
+            {
+                name: "description",
+                text: "测试图片"
+            },
+            // 第二个文件
+            {
+                name: "avatar",
+                filename: "b.png",
+                mimeType: "image/png",
+                base64: "iVBORw0KGgoAAAANSUhEUg..."
+            }
+        ]
+    }
+});
+// 自动生成 boundary
+// Content-Type: multipart/form-data; boundary=----SwiftBoundaryxxx
+```
+
+**part 字段：**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `name` | `string` | 必填，表单字段名 |
+| `filename` | `string` | 文件 part 必填 |
+| `mimeType` | `string` | 文件 part 必填 |
+| `base64` | `string` | 文件内容（base64） |
+| `text` | `string` | 纯文本字段，与 `base64` 二选一 |
+
+**上传请求强制绕过缓存**，无论 `cache` 传什么。
+
+#### Blob / 二进制
+
+```javascript
+// 带 mime 的二进制（Blob / File）
+const res = await tools.fetch({
+    url: "https://api.example.com/raw",
+    method: "POST",
+    body: {
+        __blob__: "iVBORw0KGgoAAAANSUhEUg...",  // base64
+        mimeType: "image/png"
+    }
+});
+// 自动 Content-Type: image/png
+```
+
+**上传请求强制绕过缓存。**
+
+#### 原始 Data
+
+```javascript
+// 无 mime，需手动设 Content-Type
+const res = await tools.fetch({
+    url: "https://api.example.com/raw",
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: {
+        __binary__: true,
+        base64: "AQIDBAU="
+    }
+});
+```
+
+### 9.4 响应对象
+
+`tools.fetch` resolve 的 `Response` 结构：
+
+```typescript
+interface Response {
+    ok: boolean;              // status 200..<300
+    status: number;           // HTTP 状态码
+    statusText: string;       // 状态文本，如 "OK"
+    url: string;              // 最终 URL（重定向后）
+    redirected: boolean;      // 是否发生重定向
+    redirects: RedirectRecord[];  // 重定向链
+    headers: Record<string, string>;
+
+    // body（同步属性）
+    text: string;             // UTF-8 文本
+    json: any | null;         // 已解析 JSON，非 JSON 为 null
+    bytes: string;            // base64 字符串
+
+    // body（方法形式，兼容原生 fetch）
+    text(): Promise<string>;
+    json(): Promise<any>;
+    arrayBuffer(): Promise<ArrayBuffer>;
+    clone(): Response;
+}
+```
+
+`RedirectRecord`：
+
+```typescript
+interface RedirectRecord {
+    from: string;
+    to: string;
+    statusCode: number;
+    headers: Record<string, string>;
+}
+```
+
+**使用示例：**
+
+```javascript
+const res = await tools.fetch({ url: "https://api.example.com/user/1" });
+
+console.log(res.ok);          // true
+console.log(res.status);      // 200
+console.log(res.url);         // "https://api.example.com/user/1"
+console.log(res.headers["Content-Type"]);
+
+// 同步读
+console.log(res.text);        // 字符串
+console.log(res.json);        // 已解析对象
+
+// 方法读（需要桥接层启用）
+const text = await res.text();
+const data = await res.json();
+
+// base64
+const base64 = res.bytes;
+
+// 重定向信息
+if (res.redirected) {
+    res.redirects.forEach(r => {
+        console.log(`${r.from} → ${r.to} (${r.statusCode})`);
+    });
+}
+```
+
+> **注意**：`res.text` 是同步属性，`res.text()` 是异步方法。规则代码里 `tools.css(res.text, ...)` 走属性，正确。
+
+### 9.5 重定向
+
+默认 `follow`，自动跟随，最终 `res.url` 是最后一跳地址。
+
+```javascript
+const res = await tools.fetch({ url: "https://example.com/short-link" });
+console.log(res.url);           // 最终 URL
+console.log(res.redirected);    // true
+console.log(res.redirects);     // [{ from, to, statusCode, headers }]
+```
+
+`manual` 模式下不跟随，3xx 直接返回给 JS：
+
+```javascript
+const res = await tools.fetch({
+    url: "https://example.com/a",
+    redirect: "manual"
+});
+
+if (res.status === 302) {
+    const location = res.headers["Location"];
+    // 自己决定是否跟
+    const next = await tools.fetch({ url: location });
+}
+```
+
+`error` 模式遇到 3xx 直接 reject：
+
+```javascript
+try {
+    await tools.fetch({ url: "...", redirect: "error" });
+} catch (e) {
+    console.log("重定向被拒绝:", e.message);
+}
+```
+
+### 9.6 Cookie 与 credentials
+
+**Cookie 来源：**
+
+`tools.fetch` 的 Cookie 来自 `CookieStore`，它由以下途径填充：
+
+1. **`tools.startBrowser(url)`** 关闭浏览器时同步回来的 Cookie
+2. **每次响应里的 `Set-Cookie`**（自动合并进 CookieStore）
+3. **重定向响应里的 `Set-Cookie`**（自动合并）
+4. 手动通过 `headers: { Cookie: "..." }` 传的（优先级最高）
+
+**credentials 三种模式：**
+
+```javascript
+// same-origin（默认）：同源才带 Cookie
+await tools.fetch({ url: "https://api.example.com/list" });
+
+// include：跨域也带 Cookie
+await tools.fetch({
+    url: "https://api.example.com/list",
+    credentials: "include"
+});
+
+// omit：完全不带
+await tools.fetch({
+    url: "https://third-party.com/api",
+    credentials: "omit"
+});
+```
+
+**手动设置 Cookie：**
+
+```javascript
+tools.fetch({
+    url: "https://example.com/api",
+    headers: {
+        "Cookie": "session=abc123; token=xyz"
+    }
+});
+// 手动 Cookie 优先，credentials 不再生效
+```
+
+**startBrowser 后复用 Cookie：**
+
+```javascript
+// 1. 打开浏览器让用户登录 / 过验证
+const { cookies, url } = await tools.startBrowser("https://example.com/login");
+
+// 2. 后续 fetch 自动带 Cookie（CookieStore 已同步）
+const res = await tools.fetch({
+    url: "https://example.com/api/data",
+    credentials: "include"
+});
+```
+
+### 9.7 缓存
+
+**默认行为：**
+
+- `GET` / `HEAD`：走 `RequestCache`，TTL 300 秒
+- `POST` / `PUT` / `PATCH` / `DELETE`：**不走缓存**
+- `multipart` / `blob` body：**强制不走缓存**
+
+**cache 各模式：**
+
+```javascript
+// 默认：走缓存
+await tools.fetch({ url: "https://api.example.com/list" });
+
+// 强制重新请求
+await tools.fetch({
+    url: "https://api.example.com/list",
+    cache: "reload"
+});
+
+// 完全不缓存
+await tools.fetch({
+    url: "https://api.example.com/list",
+    cache: "no-store"
+});
+
+// 优先读缓存
+await tools.fetch({
+    url: "https://api.example.com/list",
+    cache: "force-cache"
+});
+```
+
+**旧字段兼容：**
+
+```javascript
+tools.fetch({ url: "...", cache: false });  // → no-store
+tools.fetch({ url: "...", cache: true });   // → default
+```
+
+### 9.8 超时与取消
+
+**超时：**
+
+```javascript
+tools.fetch({
+    url: "https://api.example.com/slow",
+    timeout: 30   // 秒
+});
+```
+
+默认 10 秒，超时 reject。
+
+**取消：**
+
+`tools.fetch` 基于 Swift Concurrency，可以在宿主侧通过 Task 取消。JS 侧目前没有暴露 `AbortController`，如果需要，可以在桥接层实现 `tools.cancel(taskId)`：
+
+```javascript
+// 假设桥接层支持
+const p = tools.fetch({ url: "https://api.example.com/slow" });
+tools.cancel(p._taskId);
+```
+
+> 第一版可以不实现取消，超时足够覆盖大部分场景。
+
+### 9.9 错误处理
+
+`tools.fetch` 在以下情况 reject：
+
+| 场景 | reject 内容 |
+|---|---|
+| URL 无效 | `FetchError.invalidURL` |
+| 网络错误 | `FetchError.network` |
+| 重定向被拒绝（`redirect: "error"`） | `FetchError.redirectNotAllowed` |
+| 请求超时 | `FetchError.network`（含 timeout） |
+| 请求被取消 | `FetchError.cancelled` |
+| 参数解析失败 | `FetchError.invalidArguments` |
+
+**统一模板：**
+
+```javascript
+async function safeFetch(options) {
+    try {
+        return await tools.fetch(options);
+    } catch (e) {
+        console.log("fetch 失败:", e.message || e);
+        return null;
+    }
+}
+
+const res = await safeFetch({ url: "https://api.example.com/list" });
+if (res && res.ok) {
+    // ...
+}
+```
+
+**注意：** `tools.fetch` **不会**因为 HTTP 4xx / 5xx 而 reject，这些是正常响应，通过 `res.ok` / `res.status` 判断。
+
+```javascript
+const res = await tools.fetch({ url: "https://api.example.com/404" });
+console.log(res.ok);      // false
+console.log(res.status);  // 404
+// 不会抛异常
+```
+
+---
+
+## 十、console
 
 日志输出到宿主日志面板。
 
@@ -464,7 +1113,7 @@ console.error("fatal");
 
 ---
 
-## 十、工具方法
+## 十一、工具方法
 
 ### buildURL
 
@@ -497,7 +1146,7 @@ function cookiesToHeader(cookies) {
 
 ---
 
-## 十一、错误处理
+## 十二、错误处理
 
 ### 同步方法
 
@@ -530,7 +1179,7 @@ const code = await safeCall(() =>
 
 ---
 
-## 十二、完整示例
+## 十三、完整示例
 
 ### 1. 页面列表抓取
 
@@ -694,6 +1343,85 @@ async function process(url) {
 }
 ```
 
+### 5. 文件上传
+
+```javascript
+async function uploadImage(imageBase64, fileName, mimeType) {
+    const res = await tools.fetch({
+        url: "https://example.com/api/upload-image-v2",
+        method: "POST",
+        headers: {
+            "Accept": "application/json",
+            "Origin": "https://example.com",
+            "Referer": "https://example.com/"
+        },
+        body: {
+            __multipart__: true,
+            parts: [
+                {
+                    name: "file",
+                    filename: fileName,
+                    mimeType: mimeType,
+                    base64: imageBase64
+                }
+            ]
+        }
+    });
+
+    if (!res.ok) {
+        throw new Error(`上传失败: ${res.status} ${res.text}`);
+    }
+
+    return res.json;
+}
+```
+
+### 6. 搜索 + 解析
+
+```javascript
+async function search(keyWord, pageIndex) {
+    const url = `${host}/result/page-${pageIndex}?search=${encodeURIComponent(keyWord)}`;
+
+    const result = await tools.fetch({
+        url,
+        headers: httpHeaders
+    });
+
+    const items = tools.css(result.text, "div.grid > a");
+
+    return items.map(item => {
+        const rawCover = tools.css(item, "div.object-cover@data-cover-src", 0);
+        return {
+            title: tools.css(item, "h3.text-sm@text", 0),
+            cover: rawCover ? coolDecrypt(rawCover) : "",
+            detailUrl: host + tools.css(item, "a@href", 0),
+            score: tools.css(item, "span.text-xs@text", 0)
+        };
+    });
+}
+```
+
+### 7. 带重试的请求
+
+```javascript
+async function fetchWithRetry(url, options = {}, retries = 3) {
+    for (let i = 0; i < retries; i++) {
+        try {
+            const res = await tools.fetch({ url, ...options });
+            if (res.ok) return res;
+            if (res.status >= 500 && i < retries - 1) {
+                await new Promise(r => setTimeout(r, 500 * (i + 1)));
+                continue;
+            }
+            return res;
+        } catch (e) {
+            if (i === retries - 1) throw e;
+            await new Promise(r => setTimeout(r, 500 * (i + 1)));
+        }
+    }
+}
+```
+
 ---
 
 ## 附录：方法速查
@@ -720,6 +1448,71 @@ console.warn(...)
 console.info(...)
 console.debug(...)
 ```
+
+**fetch 参数速查：**
+
+```javascript
+await tools.fetch({
+    url: "https://example.com/api",   // 必填
+    method: "POST",                   // 默认 GET
+    headers: {                        // 自定义头
+        "Accept": "application/json"
+    },
+    body: { ... },                    // 见 body 全表
+    credentials: "include",           // omit / same-origin / include
+    redirect: "follow",               // follow / manual / error
+    cache: "default",                 // default / no-store / ...
+    timeout: 30                       // 秒
+});
+```
+
+**body 速查：**
+
+```javascript
+body: "text"                                              // → text/plain
+body: { a: 1 }                                            // → application/json
+body: { __json__: { ... } }                               // → application/json（防误判）
+body: { __form__: { k: "v" } }                            // → x-www-form-urlencoded
+body: { __multipart__: true, parts: [...] }               // → multipart/form-data
+body: { __blob__: "base64", mimeType: "image/png" }       // → image/png
+body: { __binary__: true, base64: "..." }                 // → 无（需手动设头）
+```
+
+**响应速查：**
+
+```javascript
+res.ok, res.status, res.statusText
+res.url, res.redirected, res.redirects
+res.headers["Content-Type"]
+res.text          // 同步字符串
+res.json          // 已解析对象
+res.bytes         // base64
+```
+
+**与原生 fetch 差异：**
+
+| 原生 fetch | tools.fetch | 说明 |
+|---|---|---|
+| `fetch(url)` | ✅ | 一致 |
+| `fetch(url, options)` | ✅ | 一致 |
+| `fetch({ url, ... })` | ✅ | 扩展，单对象形式 |
+| `body: string` | ✅ | 一致 |
+| `body: JSON.stringify(...)` | ✅ | 一致（也支持直接传对象） |
+| `body: FormData` | ⚠️ 用 `__form__` / `__multipart__` | JSCore 无原生 FormData |
+| `body: URLSearchParams` | ⚠️ 用 `__form__` | JSCore 无原生 URLSearchParams |
+| `body: Blob` / `File` | ⚠️ 用 `__blob__` | 传 base64 |
+| `body: ArrayBuffer` | ⚠️ 用 `__binary__` | 传 base64 |
+| `body: ReadableStream` | ❌ | 不支持流式上传 |
+| `credentials` 三模式 | ✅ | 一致 |
+| `redirect` 三模式 | ✅ | 一致 |
+| `cache` 六模式 | ✅ | 一致（仅 GET/HEAD 生效） |
+| `signal` / `AbortController` | ❌ | 靠 `timeout` 兜底 |
+| `res.text()` | ✅ | 也支持同步 `res.text` |
+| `res.json()` | ✅ | 也支持同步 `res.json` |
+| `res.arrayBuffer()` | ✅ | 也支持 `res.bytes`（base64） |
+| `res.clone()` | ✅ | 浅拷贝 |
+| HTTP 4xx/5xx 不 reject | ✅ | 一致 |
+| 重定向信息 | ✅ | `res.redirected` / `res.redirects` |
 
 ---
 
